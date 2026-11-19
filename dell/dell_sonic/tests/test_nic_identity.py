@@ -1,11 +1,14 @@
 """Exercise early-boot identity assignment, including swapped kernel names."""
 
 import importlib.util
+import itertools
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+from test_management_bootstrap import launch
 
 SPEC = importlib.util.spec_from_file_location(
     "nic_identity",
@@ -65,6 +68,18 @@ class IdentityTests(unittest.TestCase):
         self.apply()
         identity.verify(MAP, net=self.net)
 
+    def test_every_three_nic_registration_permutation(self):
+        for macs in itertools.permutations(MAP.values()):
+            with self.subTest(macs=macs), tempfile.TemporaryDirectory() as directory:
+                previous = self.net
+                self.net = Path(directory)
+                self.calls.clear()
+                for name, mac in zip(MAP, macs, strict=True):
+                    self.device(name, mac)
+                self.apply()
+                identity.verify(MAP, net=self.net)
+                self.net = previous
+
     def test_already_correct_does_not_touch_links(self):
         for name, mac in MAP.items():
             self.device(name, mac, flags=1)
@@ -115,3 +130,87 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("After=systemd-udev-settle.service", identity.UNIT)
         self.assertIn("Requires=vrnetlab-nic-identity.service", identity.GATE)
         self.assertIn("After=vrnetlab-nic-identity.service", identity.GATE)
+
+
+class LauncherIdentityTests(unittest.TestCase):
+    def vm(self):
+        vm = launch.Dell_Sonic_VM.__new__(launch.Dell_Sonic_VM)
+        vm.nic_identity = {}
+        return vm
+
+    def test_records_emitted_macs_without_changing_provisioned_qemu_devices(self):
+        vm = self.vm()
+        args = [
+            "-device",
+            "virtio-net-pci,netdev=p00,mac=02:00:00:00:00:AA",
+            "-netdev",
+            "user,id=p00",
+            "-device",
+            "virtio-net-pci,netdev=p01,mac=02:00:00:00:00:BB,bus=pci.1,addr=0x2",
+        ]
+        original = args.copy()
+        self.assertEqual(vm.remember_nics(args), original)
+        self.assertEqual(
+            vm.nic_identity, {"eth0": "02:00:00:00:00:aa", "eth1": "02:00:00:00:00:bb"}
+        )
+
+    def test_gap_nic_receives_an_explicit_mac_without_moving_pci_slot(self):
+        vm = self.vm()
+        args = ["-device", "virtio-net-pci,netdev=p02,bus=pci.1,addr=0x3"]
+        with patch.object(
+            launch.vrnetlab, "gen_mac", return_value=MAP["eth2"], create=True
+        ):
+            vm.remember_nics(args)
+        self.assertEqual(
+            args[1], "virtio-net-pci,netdev=p02,bus=pci.1,addr=0x3,mac=" + MAP["eth2"]
+        )
+        self.assertEqual(vm.nic_identity, {"eth2": MAP["eth2"]})
+
+    def test_identity_reboot_is_bounded_and_never_uses_live_apply(self):
+        import logging
+        import re
+
+        for marker, previous, expected in (
+            (b"NIC_IDENTITY_READY", 1, True),
+            (b"NIC_IDENTITY_INSTALLED", 0, False),
+            (b"NIC_IDENTITY_INSTALLED", 1, "fail"),
+            (b"NIC_IDENTITY_FAILED", 0, "fail"),
+            (b"", 0, "fail"),
+        ):
+            with self.subTest(marker=marker, previous=previous):
+                vm = self.vm()
+                vm.nic_identity = MAP
+                vm.nic_identity_reboots = previous
+                vm.logger = logging.getLogger("nic_identity_test")
+                vm.wait_write = MagicMock()
+                vm.prompt_write = MagicMock()
+                vm.disable_ntpsec_hook = MagicMock()
+                vm.tn = MagicMock()
+                index = (
+                    [
+                        b"NIC_IDENTITY_READY",
+                        b"NIC_IDENTITY_INSTALLED",
+                        b"NIC_IDENTITY_FAILED",
+                    ].index(marker)
+                    if marker
+                    else -1
+                )
+                vm.tn.expect.return_value = (
+                    index,
+                    re.search(marker, marker) if marker else None,
+                    marker,
+                )
+                if expected == "fail":
+                    with (
+                        self.assertRaises(SystemExit),
+                        self.assertLogs(vm.logger, level="ERROR"),
+                    ):
+                        vm.ensure_nic_identity()
+                else:
+                    self.assertEqual(vm.ensure_nic_identity(), expected)
+                commands = [c.args[0] for c in vm.prompt_write.call_args_list]
+                self.assertFalse(
+                    any("nic_identity.py apply" in cmd for cmd in commands)
+                )
+                self.assertFalse(any("ip link" in cmd for cmd in commands))
+                self.assertTrue(all(len(cmd) < 4096 for cmd in commands))

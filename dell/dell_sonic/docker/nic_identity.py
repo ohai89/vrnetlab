@@ -44,7 +44,11 @@ def validate(mapping):
     if not isinstance(mapping, dict) or "eth0" not in mapping:
         raise ValueError("NIC intent must include management eth0")
     for name, mac in mapping.items():
-        if not re.fullmatch(r"eth[0-9]{1,3}", name) or not isinstance(mac, str):
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"eth[0-9]{1,3}", name)
+            or not isinstance(mac, str)
+        ):
             raise ValueError("Invalid NIC identity")
         if not re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", mac):
             raise ValueError("Invalid NIC MAC address")
@@ -127,6 +131,9 @@ def install(mapping):
     ).hexdigest()
     if marker_matches(MARKER, digest, BOOT_ID.read_text().strip()):
         verify(mapping)
+        subprocess.run(
+            ["systemctl", "is-active", "--quiet", SERVICE], check=True, timeout=10
+        )
         print("NIC_IDENTITY_READY", flush=True)
         return
     # Do not start the service on this boot. Consumers may already be running.
@@ -151,6 +158,8 @@ def boot():
     config = json.loads(CONFIG.read_text())
     mapping = config["mapping"]
     validate(mapping)
+    # Also drain events generated after the system-wide settle job completed.
+    subprocess.run(["udevadm", "settle", "--timeout=30"], check=True, timeout=35)
     apply(mapping)
     evidence = {
         "digest": config["digest"],

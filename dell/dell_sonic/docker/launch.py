@@ -230,7 +230,9 @@ class Dell_Sonic_VM(vrnetlab.VM):
 
         if self.spins > 300:
             if self.nic_identity_reboots:
-                self.logger.error("NIC identity boot did not reach login; aborting startup")
+                self.logger.error(
+                    "NIC identity boot did not reach login; aborting startup"
+                )
                 sys.exit(1)
             # too many spins with no result ->  give up
             self.stop()
@@ -282,14 +284,16 @@ class Dell_Sonic_VM(vrnetlab.VM):
         self.prompt_write("VRL_NIC_PAYLOAD=")
         # Keep each console line well below the guest's canonical TTY limit.
         for offset in range(0, len(encoded), 768):
-            self.prompt_write(f"VRL_NIC_PAYLOAD=$VRL_NIC_PAYLOAD'{encoded[offset:offset + 768]}'")
+            self.prompt_write(
+                f"VRL_NIC_PAYLOAD=$VRL_NIC_PAYLOAD'{encoded[offset : offset + 768]}'"
+            )
         decode = (
             "import base64,sys,zlib;"
             "open('/run/vrnetlab-nic-bootstrap.py','wb').write("
             "zlib.decompress(base64.b64decode(sys.argv[1])))"
         )
         self.prompt_write(
-            f"python3 -c {shlex.quote(decode)} \"$VRL_NIC_PAYLOAD\" && "
+            f'python3 -c {shlex.quote(decode)} "$VRL_NIC_PAYLOAD" && '
             "python3 /run/vrnetlab-nic-bootstrap.py install "
             + shlex.quote(json.dumps(self.nic_identity, sort_keys=True))
         )
@@ -297,20 +301,26 @@ class Dell_Sonic_VM(vrnetlab.VM):
             [b"NIC_IDENTITY_READY", b"NIC_IDENTITY_INSTALLED", b"NIC_IDENTITY_FAILED"],
             PROMPT_TIMEOUT,
         )
-        if match and "#" in buf.decode(errors="ignore")[match.end():]:
+        if match and "#" in buf.decode(errors="ignore")[match.end() :]:
             self.wait_write("", wait=None)
         if not match or ridx == 2:
-            self.logger.error("Could not establish boot-time NIC identity; aborting startup")
+            self.logger.error(
+                "Could not establish boot-time NIC identity; aborting startup"
+            )
             sys.exit(1)
         if ridx == 0:
             self.logger.info("Boot-time NIC identities match QEMU MAC assignments")
             self.prompt_write("exit")
             return True
         if self.nic_identity_reboots:
-            self.logger.error("NIC identity marker missing after reboot; aborting startup")
+            self.logger.error(
+                "NIC identity marker missing after reboot; aborting startup"
+            )
             sys.exit(1)
         self.nic_identity_reboots += 1
-        self.logger.info("Installed early NIC identity service; rebooting before config restore")
+        self.logger.info(
+            "Installed early NIC identity service; rebooting before config restore"
+        )
         self.prompt_write("systemctl reboot")
         self.spins = 0
         return False
