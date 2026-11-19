@@ -52,12 +52,19 @@ passes. The successful collector uses the launcher's Scrapli virtual environment
 
 ## Clean-start acceptance
 
-Six fresh-overlay cycles on the standard-built image are in progress. Each must
-verify current firmware intent against physical MACs, current-boot marker and
-helper digest, retained virtio driver, unit ordering, no injected test files,
-inactive ZTP with discovery mode absent, global IPv6 addresses, and the full
-exact-restoration workflow. Do not treat this section as completed acceptance
-until those cycles finish.
+All six fresh-overlay cycles on the standard-built image passed. Every cycle
+verified current firmware intent against physical MACs, the current-boot marker
+and helper digest, retained virtio driver, unit ordering, no injected test files,
+inactive ZTP with discovery mode absent, both configured global IPv6 addresses,
+and the full dry-run, drain, status, idempotency, and exact-restoration workflow.
+Each new overlay performed exactly one setup reboot before configuration restore.
+The final saved operation state was verified `restored`.
+
+An initial acceptance-harness attempt stopped on this image's trailing empty
+objects in `ip -j` address metadata. The parser was corrected to ignore only
+metadata-only entries while still requiring every configured IPv6 address. The
+six accepted cycles were restarted from fresh disks; the incomplete attempt was
+not counted. No device readiness assertion was relaxed.
 
 ## Offline coverage and limits
 
