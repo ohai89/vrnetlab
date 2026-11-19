@@ -25,6 +25,27 @@ LOGIN_TIMEOUT = 60
 # Wait for the guest's own login prompt after "Login incorrect" before
 # nudging it with a carriage return.
 LOGIN_PROMPT_WAIT = 10
+ZTP_TIMEOUT = 180
+
+
+def quiesce_ztp_cmd(timeout=ZTP_TIMEOUT):
+    """Stop discovery before loading an explicit startup configuration.
+
+    Match SONiC's ztp-profile.sh stop_ztp_dhcp: clear the discovery profile
+    and synchronously regenerate interface configuration to stop DHCP workers.
+    Stopping the ZTP service alone does not stop work run by interfaces-config.
+    Do not load a factory fallback config or create a saved config here.
+    """
+    return (
+        f"timeout -k 5 {timeout} sh -c '"
+        "load=$(systemctl show -p LoadState --value ztp) || exit 1; "
+        'case "$load" in not-found) exit 0;; loaded|masked) ;; *) exit 1;; esac; '
+        "systemctl stop ztp && "
+        '[ "$(systemctl show -p ActiveState --value ztp)" = inactive ] && '
+        'sonic-db-cli CONFIG_DB DEL "ZTP|mode" >/dev/null && '
+        "systemctl restart interfaces-config' "
+        "&& printf '%s_%s\\n' ZTP QUIESCED || printf '%s_%s\\n' ZTP FAILED"
+    )
 
 
 def ntpsec_hook_cmd(hook=NTPSEC_HOOK):
@@ -264,6 +285,10 @@ class Dell_Sonic_VM(vrnetlab.VM):
         self.wait_write(self.password, "password:")
         self.wait_write("sleep 1", "#")
         self.wait_mgmt_ready()
+        if os.path.exists(CONFIG_FILE):
+            self.quiesce_ztp()
+            # Discovery cleanup may have reconfigured management as well.
+            self.bootstrap_mgmt()
         self.bootstrap_hostname()
         self.prompt_write("logout")
         self.logger.info("completed bootstrap configuration")
@@ -281,6 +306,19 @@ class Dell_Sonic_VM(vrnetlab.VM):
             self.logger.info(f"Disabled {NTPSEC_HOOK}, which deadlocks the guest boot")
         elif not match:
             self.logger.warning(f"Could not check {NTPSEC_HOOK}, continuing")
+
+    def quiesce_ztp(self):
+        """Fail closed if provisioning cannot be stopped before config restore."""
+        self.prompt_write(quiesce_ztp_cmd())
+        ridx, match, buf = self.tn.expect(
+            [b"ZTP_QUIESCED", b"ZTP_FAILED"], ZTP_TIMEOUT + 30
+        )
+        if match and "#" in buf.decode(errors="ignore")[match.end() :]:
+            self.wait_write("", wait=None)
+        if not match or ridx != 0:
+            self.logger.error("Could not quiesce ZTP discovery; aborting startup")
+            sys.exit(1)
+        self.logger.info("ZTP discovery quiesced before startup configuration restore")
 
     def bootstrap_mgmt(self):
         """Bring up management (address, link, default route).
@@ -406,13 +444,13 @@ class Dell_Sonic_VM(vrnetlab.VM):
         previous_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         try:
             subprocess.run(
-                f"/backup.sh -u {self.username} -p {self.password} restore",
+                ["/backup.sh", "-u", self.username, "-p", self.password, "restore"],
                 check=True,
-                shell=True,
+                timeout=600,
             )
-        except subprocess.CalledProcessError as e:
+        except (subprocess.SubprocessError, OSError):
             self.logger.error(
-                f"Failed to apply startup config {CONFIG_FILE}: {e} Aborting startup."
+                f"Failed to apply startup config {CONFIG_FILE}; aborting startup"
             )
             sys.exit(1)
         finally:

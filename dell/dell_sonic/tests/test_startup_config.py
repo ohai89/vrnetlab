@@ -166,7 +166,7 @@ class LauncherStartupConfigTests(unittest.TestCase):
         run.assert_not_called()
         self.assertTrue(vm.running)
 
-    def test_restore_failure_logs_command_and_exits_nonzero(self):
+    def test_restore_failure_does_not_log_credentials_and_exits_nonzero(self):
         vm = self.make_vm()
         err = subprocess.CalledProcessError(
             1, f"/backup.sh -u admin -p {PASSWORD} restore"
@@ -180,7 +180,7 @@ class LauncherStartupConfigTests(unittest.TestCase):
         self.assertFalse(vm.running)
         output = "\n".join(logs.output)
         self.assertIn("startup config", output.lower())
-        self.assertIn(f"/backup.sh -u admin -p {PASSWORD} restore", output)
+        self.assertNotIn(PASSWORD, output)
 
     def test_restore_failure_detected_with_sigchld_reaper_installed(self):
         """The launcher's SIGCHLD reaper must not hide the restore exit code."""
@@ -188,7 +188,7 @@ class LauncherStartupConfigTests(unittest.TestCase):
         real_run = subprocess.run
 
         def failing_restore(cmd, **kwargs):
-            return real_run("exit 3", **kwargs)
+            return real_run(["sh", "-c", "exit 3"], **kwargs)
 
         previous = signal.signal(signal.SIGCHLD, launch.handle_SIGCHLD)
         try:

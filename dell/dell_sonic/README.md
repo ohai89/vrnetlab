@@ -24,6 +24,20 @@ Full startup configuration can be passed by mounting it under `/config/config_db
 
 The startup config is copied into the VM over SSH. Before that, if the guest has an executable `/etc/network/if-up.d/ntpsec-ntpdate` hook (SONiC 4.6), the launcher removes its execute bit and stops the `systemctl start ntpsec.service` call the boot is waiting on. That hook deadlocks the 4.6 boot: `networking.service` waits for the hook, the hook waits for `ntpsec.service`, and `ntpsec.service` is ordered after units that wait for `networking.service`. The first boot then never starts `hostcfgd` or reaches `multi-user.target`, and every later boot hangs before the login prompt. The change persists on the guest disk; NTP itself still runs. Images without the hook are not changed. Then the launcher brings up the management interface over the serial console (address, link, default route). It then waits until `eth0` is up, SSH listens on IPv4, and `config-setup` has finished with `CONFIG_DB_INITIALIZED` set, so `config load` does not race the boot-time CONFIG_DB reload, and until the `bgp` container reports up in STATE_DB (`FEATURE|bgp`). Its config daemon renders the FRR configuration from CONFIG_DB when the container starts and follows changes only once it is initialized, so routing settings loaded in between would not reach FRR. These steps are idempotent and do not write to CONFIG_DB, so management settings in a supplied startup config are kept. After this wait, each serial-console prompt wait is limited to 120 seconds. If the shell prompt does not appear in time, the launcher logs an error and exits instead of hanging.
 
+When a startup configuration is supplied, the launcher first quiesces first-boot
+ZTP discovery over the root serial console. It stops `ztp.service`, checks that
+it is inactive, removes `ZTP|mode` from CONFIG_DB, and synchronously restarts
+`interfaces-config` to stop the discovery DHCP workers, following SONiC's own
+`stop_ztp_dhcp` sequence. Otherwise a late DHCPv6 `PREINIT6` can flush global IPv6
+addresses just restored by intfmgrd while leaving CONFIG_DB unchanged. Cleanup
+has a 180-second timeout (with a five-second forced-kill grace period); command
+failure or a missing completion marker aborts startup before configuration
+restore. An absent ZTP unit is allowed. No factory fallback config is loaded and
+no saved config is created by cleanup. Management settings are reapplied after
+cleanup. Without a supplied startup configuration, ZTP is left alone. The SSH
+restore subprocess is bounded to 600 seconds and its command arguments are not
+included in failure diagnostics.
+
 ### Hostname
 
 The hostname is chosen as follows:
