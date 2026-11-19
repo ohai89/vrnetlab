@@ -30,6 +30,7 @@ LOGIN_TIMEOUT = 60
 # nudging it with a carriage return.
 LOGIN_PROMPT_WAIT = 10
 ZTP_TIMEOUT = 180
+NIC_FW_CFG_FILE = "/run/vrnetlab-nic-identity.json"
 
 
 def quiesce_ztp_cmd(timeout=ZTP_TIMEOUT):
@@ -223,7 +224,14 @@ class Dell_Sonic_VM(vrnetlab.VM):
         return self.remember_nics(super().gen_mgmt())
 
     def gen_nics(self):
-        return self.remember_nics(super().gen_nics())
+        args = self.remember_nics(super().gen_nics())
+        Path(NIC_FW_CFG_FILE).write_text(
+            json.dumps(self.nic_identity, sort_keys=True) + "\n"
+        )
+        return args + [
+            "-fw_cfg",
+            f"name=opt/vrnetlab/nic-identity,file={NIC_FW_CFG_FILE}",
+        ]
 
     def bootstrap_spin(self):
         """This function should be called periodically to do work."""

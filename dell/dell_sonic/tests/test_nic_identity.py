@@ -131,6 +131,44 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("Requires=vrnetlab-nic-identity.service", identity.GATE)
         self.assertIn("After=vrnetlab-nic-identity.service", identity.GATE)
 
+    def test_firmware_intent_is_read_afresh_for_each_vm_launch(self):
+        firmware = self.root / "firmware"
+        with (
+            patch.object(identity, "FW_CFG", firmware),
+            patch.object(identity.subprocess, "run"),
+        ):
+            firmware.write_text(json.dumps(MAP))
+            self.assertEqual(identity.read_intent(), MAP)
+            changed = dict(MAP, eth0="02:00:00:00:00:aa")
+            firmware.write_text(json.dumps(changed))
+            self.assertEqual(identity.read_intent(), changed)
+
+    def test_missing_or_mismatched_firmware_cannot_install_or_mark_ready(self):
+        firmware = self.root / "firmware"
+        with (
+            patch.object(identity, "FW_CFG", firmware),
+            patch.object(identity.subprocess, "run"),
+            patch.object(identity, "write") as write,
+        ):
+            with self.assertRaises(FileNotFoundError):
+                identity.install(MAP)
+            firmware.write_text(json.dumps(dict(MAP, eth0="02:00:00:00:00:aa")))
+            with self.assertRaises(ValueError):
+                identity.install(MAP)
+            write.assert_not_called()
+
+    def test_failed_assignment_never_creates_completion_marker(self):
+        marker = self.root / "marker"
+        with (
+            patch.object(identity, "MARKER", marker),
+            patch.object(identity, "read_intent", return_value=MAP),
+            patch.object(identity.subprocess, "run"),
+            patch.object(identity, "apply", side_effect=ValueError("ambiguous")),
+            self.assertRaises(ValueError),
+        ):
+            identity.boot()
+        self.assertFalse(marker.exists())
+
 
 class LauncherIdentityTests(unittest.TestCase):
     def vm(self):
@@ -165,6 +203,29 @@ class LauncherIdentityTests(unittest.TestCase):
             args[1], "virtio-net-pci,netdev=p02,bus=pci.1,addr=0x3,mac=" + MAP["eth2"]
         )
         self.assertEqual(vm.nic_identity, {"eth2": MAP["eth2"]})
+
+    def test_firmware_payload_matches_the_exact_generated_qemu_macs(self):
+        vm = self.vm()
+        vm.nic_identity = {"eth0": MAP["eth0"]}
+        args = ["-device", "virtio-net-pci,netdev=p01,mac=" + MAP["eth1"]]
+        with tempfile.TemporaryDirectory() as directory:
+            payload = Path(directory) / "intent.json"
+            with (
+                patch.object(launch, "NIC_FW_CFG_FILE", str(payload), create=True),
+                patch.object(
+                    launch.vrnetlab.VM, "gen_nics", return_value=args, create=True
+                ),
+            ):
+                result = vm.gen_nics()
+            self.assertEqual(
+                json.loads(payload.read_text()),
+                {"eth0": MAP["eth0"], "eth1": MAP["eth1"]},
+            )
+            self.assertEqual(
+                result[-2:],
+                ["-fw_cfg", "name=opt/vrnetlab/nic-identity,file=" + str(payload)],
+            )
+            self.assertEqual(result[:2], args)
 
     def test_identity_reboot_is_bounded_and_never_uses_live_apply(self):
         import logging

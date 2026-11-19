@@ -15,7 +15,7 @@ from pathlib import Path
 
 SERVICE = "vrnetlab-nic-identity.service"
 HELPER = Path("/usr/local/lib/vrnetlab/nic_identity.py")
-CONFIG = Path("/etc/vrnetlab/nic-identity.json")
+FW_CFG = Path("/sys/firmware/qemu_fw_cfg/by_name/opt/vrnetlab/nic-identity/raw")
 MARKER = Path("/run/vrnetlab-nic-identity.json")
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 NET = Path("/sys/class/net")
@@ -113,6 +113,20 @@ def marker_matches(marker, digest, boot_id):
         return False
 
 
+def read_intent():
+    # Current QEMU launch intent, not a MAC map persisted on the guest disk.
+    subprocess.run(["modprobe", "qemu_fw_cfg"], check=True, timeout=10)
+    mapping = json.loads(FW_CFG.read_bytes())
+    validate(mapping)
+    return mapping
+
+
+def identity_digest(mapping, source):
+    return hashlib.sha256(
+        (source + json.dumps(mapping, sort_keys=True)).encode()
+    ).hexdigest()
+
+
 def write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -125,10 +139,10 @@ def write(path, content):
 
 def install(mapping):
     validate(mapping)
+    if read_intent() != mapping:
+        raise ValueError("QEMU firmware intent does not match the launcher")
     source = Path(__file__).read_text()
-    digest = hashlib.sha256(
-        (source + json.dumps(mapping, sort_keys=True)).encode()
-    ).hexdigest()
+    digest = identity_digest(mapping, source)
     if marker_matches(MARKER, digest, BOOT_ID.read_text().strip()):
         verify(mapping)
         subprocess.run(
@@ -138,7 +152,6 @@ def install(mapping):
         return
     # Do not start the service on this boot. Consumers may already be running.
     write(HELPER, source)
-    write(CONFIG, json.dumps({"mapping": mapping, "digest": digest}) + "\n")
     unit_dir = Path("/etc/systemd/system")
     write(unit_dir / SERVICE, UNIT)
     for consumer in ("networking.service", "sonic.target"):
@@ -155,14 +168,12 @@ def install(mapping):
 
 
 def boot():
-    config = json.loads(CONFIG.read_text())
-    mapping = config["mapping"]
-    validate(mapping)
+    mapping = read_intent()
     # Also drain events generated after the system-wide settle job completed.
     subprocess.run(["udevadm", "settle", "--timeout=30"], check=True, timeout=35)
     apply(mapping)
     evidence = {
-        "digest": config["digest"],
+        "digest": identity_digest(mapping, Path(__file__).read_text()),
         "boot_id": BOOT_ID.read_text().strip(),
         "monotonic": time.monotonic(),
         "mapping": mapping,

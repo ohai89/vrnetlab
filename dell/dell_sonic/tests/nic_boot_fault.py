@@ -73,11 +73,21 @@ def inject():
         or after["eth2"]["mac"] != mapping["eth1"]
     ):
         raise ValueError("Injection did not reproduce the intended name reversal")
+    # Negative test: make identity ambiguous without altering firmware intent.
+    # Only enabled by an explicit disposable-guest service environment override.
+    duplicate = os.environ.get("VRNETLAB_NIC_FAULT") == "duplicate"
+    if duplicate:
+        subprocess.run(
+            ["ip", "link", "set", "dev", "eth2", "address", mapping["eth2"]],
+            check=True,
+        )
+        after = snapshot()
     RECORD.write_text(
         json.dumps(
             {
                 "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                 "monotonic": time.monotonic(),
+                "duplicate": duplicate,
                 "before": before,
                 "after": after,
             },
@@ -120,8 +130,45 @@ def install(mapping):
     print("NIC_BOOT_FAULT_INSTALLED: reboot required; no NICs changed", flush=True)
 
 
+def report():
+    """Report failure gating on the serial console when SSH cannot start."""
+    units = {}
+    for name in (
+        "vrnetlab-nic-identity.service",
+        "networking.service",
+        "sonic.target",
+        "config-setup.service",
+        "swss.service",
+        "syncd.service",
+    ):
+        output = subprocess.check_output(
+            [
+                "systemctl",
+                "show",
+                name,
+                "-p",
+                "ActiveState",
+                "-p",
+                "ActiveEnterTimestampMonotonic",
+                "-p",
+                "InactiveExitTimestampMonotonic",
+            ],
+            text=True,
+        )
+        units[name] = dict(line.split("=", 1) for line in output.splitlines())
+    evidence = {
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "marker_exists": Path("/run/vrnetlab-nic-identity.json").exists(),
+        "units": units,
+        "fault": json.loads(RECORD.read_text()),
+    }
+    print("NIC_FAILCLOSED " + json.dumps(evidence, sort_keys=True), flush=True)
+
+
 if __name__ == "__main__":
-    if sys.argv[1:] == ["apply"]:
+    if sys.argv[1:] == ["report"]:
+        report()
+    elif sys.argv[1:] == ["apply"]:
         inject()
     elif len(sys.argv) == 3 and sys.argv[1] == "install":
         install(json.loads(sys.argv[2]))

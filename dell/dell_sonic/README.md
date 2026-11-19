@@ -38,6 +38,38 @@ cleanup. Without a supplied startup configuration, ZTP is left alone. The SSH
 restore subprocess is bounded to 600 seconds and its command arguments are not
 included in failure diagnostics.
 
+### NIC identity
+
+The launcher retains `virtio-net-pci`. Kernel allocation-order `ethN` names are
+not treated as physical interface identity: the same PCI/MAC wiring can receive
+different names when network devices register in a different order. The guest's
+HwSKU lanemap, however, requires those names to refer to the intended ports.
+
+The launcher records the exact MACs emitted to QEMU for management and dataplane,
+including snapshot MACs and explicit MACs for sparse-topology gap NICs. It passes
+that map through QEMU's read-only `opt/vrnetlab/nic-identity` firmware entry. The
+guest requires the `qemu_fw_cfg` kernel driver; unsupported or mismatching firmware
+intent aborts provisioning before startup configuration restore. Intent is read
+afresh each boot, not saved as a potentially stale MAC map on the guest disk.
+
+On a new guest overlay, the launcher installs an early identity service over the
+serial console and reboots once **before** restoring the supplied configuration.
+Installation never renames live interfaces. On the next boot the service waits
+for udev enumeration, resolves physical interfaces by MAC, and validates the whole
+map before changing anything. It frees conflicting names using temporary names,
+then assigns the intended `ethN` names. Missing or duplicate MACs, unrelated name
+occupants, temporary-name conflicts, and active interfaces requiring renaming
+fail closed. The service is required before `sysinit.target`, networking, and
+`sonic.target`; a failure blocks their startup rather than allowing SONiC to bind
+to the wrong physical interfaces. HwSKU files and logical port names are unchanged.
+
+The launcher requires a current-boot completion marker tied to the helper code
+and exact firmware intent, an active identity service, and a fresh mapping check
+before it proceeds with bootstrap and startup restore. One automatic setup reboot
+is allowed per launcher invocation; a missing marker afterward aborts startup.
+The installed service runs on subsequent guest boots too. A new overlay or helper
+version needs the setup reboot again.
+
 ### Hostname
 
 The hostname is chosen as follows:
