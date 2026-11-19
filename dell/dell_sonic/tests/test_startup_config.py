@@ -143,6 +143,7 @@ class LauncherStartupConfigTests(unittest.TestCase):
         vm.tn.expect.return_value = (0, True, b"login:")
         vm.wait_write = MagicMock()
         vm.bootstrap_config = MagicMock()
+        vm.ensure_nic_identity = MagicMock(return_value=True)
         return vm
 
     def spin(self, vm, exists, run_side_effect=None):
@@ -159,6 +160,14 @@ class LauncherStartupConfigTests(unittest.TestCase):
         run.assert_called_once()
         self.assertIn("restore", run.call_args.args[0])
         self.assertTrue(vm.running)
+
+    def test_identity_reboot_precedes_bootstrap_and_restore(self):
+        vm = self.make_vm()
+        vm.ensure_nic_identity.return_value = False
+        run = self.spin(vm, exists=True)
+        vm.bootstrap_config.assert_not_called()
+        run.assert_not_called()
+        self.assertFalse(vm.running)
 
     def test_no_config_skips_restore_and_marks_running(self):
         vm = self.make_vm()

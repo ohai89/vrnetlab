@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 
+import base64
 import datetime
 import json
 import logging
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
+import zlib
+from pathlib import Path
 
 import vrnetlab
 
@@ -192,11 +196,42 @@ class Dell_Sonic_VM(vrnetlab.VM):
         self.conn_mode = conn_mode
         self.num_nics = 10
         self.hostname = hostname
+        self.nic_identity = {}
+        self.nic_identity_reboots = 0
+
+    def remember_nics(self, args):
+        """Record the exact MACs emitted to QEMU, including snapshot/dummy NICs."""
+        for i, arg in enumerate(args[:-1]):
+            if arg != "-device":
+                continue
+            fields = dict(
+                field.split("=", 1) for field in args[i + 1].split(",") if "=" in field
+            )
+            match = re.fullmatch(r"p([0-9]+)", fields.get("netdev", ""))
+            if not match:
+                continue
+            index = int(match.group(1))
+            mac = fields.get("mac")
+            if not mac:
+                # Sparse topologies still need stable identities for gap NICs.
+                mac = vrnetlab.gen_mac(index)
+                args[i + 1] += f",mac={mac}"
+            self.nic_identity[f"eth{index}"] = mac.lower()
+        return args
+
+    def gen_mgmt(self):
+        return self.remember_nics(super().gen_mgmt())
+
+    def gen_nics(self):
+        return self.remember_nics(super().gen_nics())
 
     def bootstrap_spin(self):
         """This function should be called periodically to do work."""
 
         if self.spins > 300:
+            if self.nic_identity_reboots:
+                self.logger.error("NIC identity boot did not reach login; aborting startup")
+                sys.exit(1)
             # too many spins with no result ->  give up
             self.stop()
             self.start()
@@ -207,6 +242,9 @@ class Dell_Sonic_VM(vrnetlab.VM):
             self.logger.info("VM started")
 
             self.console_login()
+
+            if not self.ensure_nic_identity():
+                return
 
             # run main config!
             self.bootstrap_config()
@@ -230,6 +268,52 @@ class Dell_Sonic_VM(vrnetlab.VM):
         self.spins += 1
 
         return
+
+    def ensure_nic_identity(self):
+        """Install early-boot identity assignment, never repair live wiring."""
+        if "eth0" not in self.nic_identity:
+            self.logger.error("No QEMU management NIC identity; aborting startup")
+            sys.exit(1)
+        self.wait_write("sudo -i", "$")
+        self.disable_ntpsec_hook()
+        encoded = base64.b64encode(
+            zlib.compress(Path(__file__).with_name("nic_identity.py").read_bytes())
+        ).decode()
+        self.prompt_write("VRL_NIC_PAYLOAD=")
+        # Keep each console line well below the guest's canonical TTY limit.
+        for offset in range(0, len(encoded), 768):
+            self.prompt_write(f"VRL_NIC_PAYLOAD=$VRL_NIC_PAYLOAD'{encoded[offset:offset + 768]}'")
+        decode = (
+            "import base64,sys,zlib;"
+            "open('/run/vrnetlab-nic-bootstrap.py','wb').write("
+            "zlib.decompress(base64.b64decode(sys.argv[1])))"
+        )
+        self.prompt_write(
+            f"python3 -c {shlex.quote(decode)} \"$VRL_NIC_PAYLOAD\" && "
+            "python3 /run/vrnetlab-nic-bootstrap.py install "
+            + shlex.quote(json.dumps(self.nic_identity, sort_keys=True))
+        )
+        ridx, match, buf = self.tn.expect(
+            [b"NIC_IDENTITY_READY", b"NIC_IDENTITY_INSTALLED", b"NIC_IDENTITY_FAILED"],
+            PROMPT_TIMEOUT,
+        )
+        if match and "#" in buf.decode(errors="ignore")[match.end():]:
+            self.wait_write("", wait=None)
+        if not match or ridx == 2:
+            self.logger.error("Could not establish boot-time NIC identity; aborting startup")
+            sys.exit(1)
+        if ridx == 0:
+            self.logger.info("Boot-time NIC identities match QEMU MAC assignments")
+            self.prompt_write("exit")
+            return True
+        if self.nic_identity_reboots:
+            self.logger.error("NIC identity marker missing after reboot; aborting startup")
+            sys.exit(1)
+        self.nic_identity_reboots += 1
+        self.logger.info("Installed early NIC identity service; rebooting before config restore")
+        self.prompt_write("systemctl reboot")
+        self.spins = 0
+        return False
 
     def console_login(self):
         """Log in on the serial console.
