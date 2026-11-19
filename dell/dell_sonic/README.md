@@ -70,6 +70,9 @@ is allowed per launcher invocation; a missing marker afterward aborts startup.
 The installed service runs on subsequent guest boots too. A new overlay or helper
 version needs the setup reboot again.
 
+See [NIC validation](tests/NIC-VALIDATION.md) for fault-injection evidence and
+the tested scope. The fault injector is not included in production images.
+
 ### Hostname
 
 The hostname is chosen as follows:
