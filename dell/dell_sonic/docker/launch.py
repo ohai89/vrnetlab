@@ -188,7 +188,9 @@ class Dell_Sonic_VM(vrnetlab.VM):
         super(Dell_Sonic_VM, self).__init__(
             username, password, disk_image=disk_image, ram=4096, smp="2"
         )
-        self.nic_type = "virtio-net-pci"
+        # SONiC uses allocation-order ethN names. Use a direct PCI driver rather
+        # than relying on relative virtio transport/network registration timing.
+        self.nic_type = "e1000"
         self.conn_mode = conn_mode
         self.num_nics = 10
         self.hostname = hostname

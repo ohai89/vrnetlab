@@ -53,6 +53,19 @@ This is needed because on the SONiC 4.6 VM `hostname-config` runs before the sta
 
 ## Known limitations
 
+- The launcher uses emulated `e1000` NICs for management and dataplane. SONiC's
+  allocation-order `ethN` names must agree with the HwSKU lanemap: reversing
+  virtio network-device registration can swap `eth1` and `eth2` without changing
+  PCI addresses or MAC assignments. The direct PCI driver avoids dependence on
+  virtio transport/network registration timing, at the cost of emulation
+  throughput. This does not rename live interfaces or modify HwSKU mappings.
+  Six clean Enterprise SONiC 4.6 boots with the default `tc` datapath passed
+  MAC/PCI mapping and IPv4/IPv6 routing and restoration checks. The precise
+  intermittent cold-boot interleaving is not established; twelve baseline
+  virtio boots also passed, and the failing registration-order test was induced.
+  Other image versions and the virtio/vhost-dependent `macvtap` datapath have
+  not been validated with this NIC model; this candidate is not a general
+  datapath compatibility claim.
 - The launcher bootstraps the guest once. It does not re-run the bootstrap after an in-guest reboot, so settings applied at startup but not saved in the guest (the hostname without a startup config, a static management address that is not in the startup config) are not reapplied.
 - Restarting the container (`docker restart`) reuses the existing disk overlay, so the guest keeps its disk state. The launcher logs in with the factory password and, after `Login incorrect`, with the configured password (sending an empty line if the guest shows no new login prompt within 10 seconds), then runs the bootstrap and startup config load again. Under Containerlab, a restarted container does not get its data links back; recreate the node.
 
