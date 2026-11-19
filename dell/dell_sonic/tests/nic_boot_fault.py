@@ -165,8 +165,35 @@ def report():
     print("NIC_FAILCLOSED " + json.dumps(evidence, sort_keys=True), flush=True)
 
 
+def wait_report():
+    # Start before the identity job, and survive emergency-target isolation.
+    # OnFailure jobs alone can be cancelled when sysinit.target fails.
+    print("NIC_PROOF_LISTENER", flush=True)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        state = subprocess.check_output(
+            [
+                "systemctl",
+                "show",
+                "vrnetlab-nic-identity.service",
+                "-p",
+                "ActiveState",
+                "--value",
+            ],
+            text=True,
+            timeout=5,
+        ).strip()
+        if state == "failed":
+            report()
+            return
+        time.sleep(0.1)
+    raise SystemExit("Identity did not fail during the negative boot probe")
+
+
 if __name__ == "__main__":
-    if sys.argv[1:] == ["report"]:
+    if sys.argv[1:] == ["wait-report"]:
+        wait_report()
+    elif sys.argv[1:] == ["report"]:
         report()
     elif sys.argv[1:] == ["apply"]:
         inject()
