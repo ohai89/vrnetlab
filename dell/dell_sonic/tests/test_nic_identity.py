@@ -192,6 +192,16 @@ class LauncherIdentityTests(unittest.TestCase):
             vm.nic_identity, {"eth0": "02:00:00:00:00:aa", "eth1": "02:00:00:00:00:bb"}
         )
 
+    def test_new_qemu_launch_does_not_retain_old_nic_intent(self):
+        vm = self.vm()
+        vm.nic_identity = {"eth9": "02:00:00:00:00:99"}
+        args = ["-device", "virtio-net-pci,netdev=p00,mac=" + MAP["eth0"]]
+        with patch.object(
+            launch.vrnetlab.VM, "gen_mgmt", return_value=args, create=True
+        ):
+            self.assertEqual(vm.gen_mgmt(), args)
+        self.assertEqual(vm.nic_identity, {"eth0": MAP["eth0"]})
+
     def test_gap_nic_receives_an_explicit_mac_without_moving_pci_slot(self):
         vm = self.vm()
         args = ["-device", "virtio-net-pci,netdev=p02,bus=pci.1,addr=0x3"]

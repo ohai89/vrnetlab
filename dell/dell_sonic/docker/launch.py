@@ -221,6 +221,9 @@ class Dell_Sonic_VM(vrnetlab.VM):
         return args
 
     def gen_mgmt(self):
+        # start() may be called again on the same VM object. Do not retain NICs
+        # from a previous QEMU command when building the next firmware intent.
+        self.nic_identity = {}
         return self.remember_nics(super().gen_mgmt())
 
     def gen_nics(self):
